@@ -14,6 +14,9 @@ use loader::Loader;
 mod output;
 use output::HeaderBuilder;
 
+mod check;
+use check::sanity_check;
+
 fn main() {
     let matches = App::new("Pico Image Compressor")
         .version("1.0")
@@ -57,6 +60,9 @@ fn main() {
     let duration = Duration::milliseconds(milliseconds as i64);
     let solution = Solution::solve(duration, files.clone());
 
+    sanity_check(&files, &solution);
+    println!("Sanity ok");
+
     header.stats_comment(solution.stats());
     header.image_list_comment(&files);
     header.write_pixels(solution.pixels());
@@ -65,3 +71,4 @@ fn main() {
     let output = matches.value_of("OUTPUT").expect("OUTPUT had no value");
     fs::write(output, header.to_string()).unwrap();
 }
+

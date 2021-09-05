@@ -26,13 +26,34 @@ impl fmt::Display for ImageData {
 pub struct ImageRow {
     pub data: Vec<u8>,
     pub alpha_prefix: u16,
-    pub alpha_suffix: u16,
-    pub is_discontinuous: bool,
 
     pub avx_search: Arc<DynamicAvx2Searcher<Vec<u8>>>,
 }
 
-impl<'a> ImageRow {
+impl fmt::Debug for ImageRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImageRow")
+         .field("data", &self.data)
+         .field("alpha_prefix", &self.alpha_prefix)
+         .finish()
+    }
+}
+
+impl PartialEq for ImageRow {
+    fn eq(&self, other: &Self) -> bool
+    {    
+        if self.alpha_prefix != other.alpha_prefix {
+            return false;
+        }
+        if self.data.len() != other.data.len() {
+            return false;
+        }
+
+        return self.data.iter().zip_eq(other.data.iter()).all(|(a, b)| *a == *b);
+    }
+}
+
+impl ImageRow {
     pub fn new(mut data: Vec<u8>) -> ImageRow
     {
         // Find how many leading pixels are transparent and remove from row
@@ -46,13 +67,9 @@ impl<'a> ImageRow {
         // Build AVX searchers
         let avx = unsafe { DynamicAvx2Searcher::new(data.clone()) };
 
-        // check if the remaining data contains any transparent pixels
-        let is_discontinuous = data.chunks(2).any(ImageRow::packed_is_transparent);
         return ImageRow {
             data,
             alpha_prefix: prefix as u16,
-            alpha_suffix: suffix as u16,
-            is_discontinuous,
             avx_search: Arc::new(avx),
         };
     }
@@ -105,10 +122,11 @@ impl Solution {
                 .sorted_by_key(|a| a.rowidx)
                 .map(|a| {
                     let row = &image.rows[a.rowidx];
+                    let is_discontinuous = row.data.chunks(2).any(ImageRow::packed_is_transparent);
                     SolutionRow {
                         first_pixel_index: a.startidx as u64,
                         first_pixel_xpos: row.alpha_prefix as u64,
-                        is_discontinuous: row.is_discontinuous,
+                        is_discontinuous: is_discontinuous,
                         pixel_count: row.data.len() as u64
                     }
                 })
@@ -199,7 +217,7 @@ impl Candidate {
             let row = &images[*imgidx].rows[*rowidx];
             let needle = &row.data;
 
-            let substring = unsafe { row.avx_search.search_in(&haystack) };
+            let substring = unsafe { row.avx_search.inlined_search_in(&haystack) };
 
             if !substring
             {
@@ -269,9 +287,9 @@ impl Problem
         }
     }
 
-    // Check if the given row is trivially a subset, because it's a subset of another
-    // row! We can exclude this from the search set because it's guaranteed to simply
-    // be included already.
+    // Check if the given row is trivially a subset because it's a subset of another
+    // row! We can exclude this from the search set because it's guaranteed to be
+    // included already.
     fn is_trivial(row: &Vec<u8>, row_index: usize, rows: &Vec<Vec<u8>>) -> bool
     {
         return rows
