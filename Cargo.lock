@@ -94,6 +94,7 @@ dependencies = [
  "image",
  "itertools",
  "kmp",
+ "memchr",
  "rand 0.3.23",
  "rayon",
  "sliceslice",

@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use itertools::Itertools;
 
-use crate::solver::{ImageData, SolutionImage, SolutionStats};
+use crate::{loader::RawImageData, solver::{SolutionImage, SolutionStats}};
 
 pub struct HeaderBuilder {
     strings: Vec<String>,
@@ -33,7 +33,7 @@ impl HeaderBuilder {
         self.strings.push(str.to_string());
     }
 
-    pub fn image_list_comment(&mut self, images: &Vec<ImageData>)
+    pub fn image_list_comment(&mut self, images: &Vec<RawImageData>)
     {
         self.push("// ## Loaded images:");
         for image in images.iter().sorted_by_key(|a| a.pixel_count).rev() {

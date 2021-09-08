@@ -1,10 +1,23 @@
-use std::path::PathBuf;
+use std::{fmt::{self, Display, Formatter}, path::PathBuf};
 
 use image::GenericImageView;
 use image::io::Reader as ImageReader;
 use glob::glob;
 
-use crate::solver::{ImageData, ImageRow};
+#[derive(Clone, Debug)]
+pub struct RawImageData {
+    pub width: usize,
+    pub height: usize,
+    pub rows: Vec<Vec<u8>>,
+    pub name: String,
+    pub pixel_count: u64,
+}
+
+impl Display for RawImageData {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:\t{} rows, {} pixels", self.name, self.rows.len(), self.pixel_count)
+    }
+}
 
 pub struct Loader {
     files: Vec<PathBuf>
@@ -20,7 +33,7 @@ impl Loader {
         return Loader { files };
     }
 
-    pub fn load_files(&self) -> Vec<ImageData>
+    pub fn load_files(&self) -> Vec<RawImageData>
     {
         return self.files.iter()
             .map(|path| {
@@ -39,19 +52,17 @@ impl Loader {
 
                     // Convert all pixels to 2x8 bit values
                     let row = row.chunks(4).map(pack_pixel).flatten().collect::<Vec<u8>>();
-                    pixel_count += row.len() as u64;
-                    rows.push(ImageRow::new(row));
+                    assert_eq!(row.len(), width * 2);
+
+                    pixel_count += (row.len() / 2) as u64;
+                    rows.push(row);
                 }
 
-                let name = path.to_string_lossy().to_string()
-                    .replace("/", "_")
-                    .replace("\\", "_")
-                    .replace("-", "_")
-                    .replace(".", "_");
+                let name = sanitise_path(&path);
 
-                ImageData {
-                    width: width as u64,
-                    height: height as u64,
+                RawImageData {
+                    width,
+                    height,
                     rows,
                     name,
                     pixel_count,
@@ -59,6 +70,17 @@ impl Loader {
             })
             .collect();
     }
+}
+
+fn sanitise_path(path: &PathBuf) -> String
+{
+    return path
+        .to_string_lossy()
+        .to_string()
+        .replace("/", "_")
+        .replace("\\", "_")
+        .replace("-", "_")
+        .replace(".", "_");
 }
 
 fn pack_pixel(bgra: &[u8]) -> [u8; 2]

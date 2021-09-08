@@ -1,6 +1,8 @@
-use crate::solver::{ImageData, ImageRow, Solution, SolutionImage};
 
-pub fn sanity_check(files: &[ImageData], solution: &Solution)
+
+use crate::{loader::RawImageData, solver::{Solution, SolutionImage}};
+
+pub fn sanity_check(files: &[RawImageData], solution: &Solution)
 {
     let pixels = solution.pixels();
     let metadata = solution.metadata();
@@ -10,18 +12,18 @@ pub fn sanity_check(files: &[ImageData], solution: &Solution)
         // Find the metadata for this image
         let metadata = metadata.iter().find(|a| a.name == image.name).unwrap();
 
-        let reconstructed = reconstruct_image(&metadata, &pixels);
+        let reconstructed = reconstruct_image(&metadata, &pixels, image.width * 2);
 
         for (idx, row) in image.rows.iter().enumerate()
         {
             if reconstructed[idx] != *row {
-                panic!("Reconstruction failure.\nExpected: {:?}\nActual:{:?}", *row, reconstructed[idx]);
+                panic!("Reconstruction failure.\nExpected (len:{}): {:?}\nActual (len:{}):{:?}", row.len(), *row, reconstructed[idx].len(), reconstructed[idx]);
             }
         }
     }
 }
 
-fn reconstruct_image(metadata: &SolutionImage, pixels: &Vec<u8>) -> Vec<ImageRow>
+fn reconstruct_image(metadata: &SolutionImage, pixels: &Vec<u8>, pad_to: usize) -> Vec<Vec<u8>>
 {
     let mut rows = Vec::new();
 
@@ -31,9 +33,14 @@ fn reconstruct_image(metadata: &SolutionImage, pixels: &Vec<u8>) -> Vec<ImageRow
         let count = row.pixel_count as usize;
         let xpos = row.first_pixel_xpos as usize;
 
-        let data = pixels[idx..][..count].to_vec();
-        let mut row = ImageRow::new(data);
-        row.alpha_prefix = xpos as u16;
+        let mut row = Vec::new();
+        for _ in 0..xpos * 2 {
+            row.push(0u8);
+        }
+        row.extend_from_slice(&pixels[idx..][..count]);
+        while row.len() < pad_to {
+            row.push(0);
+        }
 
         rows.push(row)
     }

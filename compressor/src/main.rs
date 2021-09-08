@@ -58,7 +58,7 @@ fn main() {
 
     let milliseconds: u32 = matches.value_of("DURATION").expect("DURATION had no value").parse::<u32>().unwrap_or(30000);
     let duration = Duration::milliseconds(milliseconds as i64);
-    let solution = Solution::solve(duration, files.clone());
+    let solution = Solution::solve(duration, &files);
 
     sanity_check(&files, &solution);
     println!("Sanity ok");

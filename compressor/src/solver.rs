@@ -1,16 +1,18 @@
-use std::{fmt, sync::Arc};
+use std::fmt;
 
 use itertools::Itertools;
 use kmp::kmp_find;
+use memchr::memmem::Finder;
 use rand::{Rng, thread_rng};
 use time::{Duration, PreciseTime};
 use rayon::prelude::*;
-use sliceslice::x86::DynamicAvx2Searcher;
+
+use crate::loader::RawImageData;
 
 #[derive(Clone)]
 pub struct ImageData {
-    pub width: u64,
-    pub height: u64,
+    pub width: usize,
+    pub height: usize,
     pub rows: Vec<ImageRow>,
     pub name: String,
     pub pixel_count: u64,
@@ -22,12 +24,23 @@ impl fmt::Display for ImageData {
     }
 }
 
+impl ImageData {
+    fn new(input: &RawImageData) -> ImageData {
+        ImageData {
+            width: input.width,
+            height: input.height,
+            name: input.name.clone(),
+            pixel_count: input.pixel_count,
+            rows: input.rows.iter().map(|r| ImageRow::new(r)).collect(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ImageRow {
     pub data: Vec<u8>,
     pub alpha_prefix: u16,
-
-    pub avx_search: Arc<DynamicAvx2Searcher<Vec<u8>>>,
+    pub finder: Finder<'static>
 }
 
 impl fmt::Debug for ImageRow {
@@ -54,8 +67,10 @@ impl PartialEq for ImageRow {
 }
 
 impl ImageRow {
-    pub fn new(mut data: Vec<u8>) -> ImageRow
+    pub fn new(data: &Vec<u8>) -> ImageRow
     {
+        let mut data = data.clone();
+
         // Find how many leading pixels are transparent and remove from row
         let prefix = data.chunks(2).take_while(|px| ImageRow::packed_is_transparent(*px)).count();
         drop(data.drain(0..prefix * 2));
@@ -64,13 +79,12 @@ impl ImageRow {
         let suffix = data.chunks(2).rev().take_while(|px| ImageRow::packed_is_transparent(*px)).count();
         data.truncate(data.len() - suffix * 2);
 
-        // Build AVX searchers
-        let avx = unsafe { DynamicAvx2Searcher::new(data.clone()) };
+        let finder = Finder::new(&data).into_owned();
 
         return ImageRow {
             data,
             alpha_prefix: prefix as u16,
-            avx_search: Arc::new(avx),
+            finder
         };
     }
 
@@ -95,8 +109,8 @@ pub struct SolutionRow {
 
 pub struct SolutionImage {
     pub rows: Vec<SolutionRow>,
-    pub width: u64,
-    pub height: u64,
+    pub width: usize,
+    pub height: usize,
     pub name: String
 }
 
@@ -126,7 +140,7 @@ impl Solution {
                     SolutionRow {
                         first_pixel_index: a.startidx as u64,
                         first_pixel_xpos: row.alpha_prefix as u64,
-                        is_discontinuous: is_discontinuous,
+                        is_discontinuous,
                         pixel_count: row.data.len() as u64
                     }
                 })
@@ -166,17 +180,17 @@ impl Solution {
     }
 }
 
-#[derive(Clone)]
-struct Candidate {
-    // Set of (image_index, row_index) tuples
-    row_indices: Vec<(usize, usize)>
-}
-
 #[derive(Clone, Copy)]
 struct FlattenedRow {
     imgidx: usize,
     rowidx: usize,
     startidx: usize,
+}
+
+#[derive(Clone)]
+struct Candidate {
+    // Set of (image_index, row_index) tuples
+    row_indices: Vec<(usize, usize)>,
 }
 
 impl Candidate {
@@ -208,25 +222,51 @@ impl Candidate {
         return (haystack, offsets);
     }
 
-    fn flatten(&self, capacity: usize, images: &Vec<ImageData>) -> Vec<u8>
+    fn flatten(&mut self, capacity: usize, images: &Vec<ImageData>) -> Vec<u8>
     {
+        // Keep a "palette" of pairs of value which have been seen so far. Once a byte pair is encountered
+        // mark the correspoinding value as true. This can shorcut some substring searches - if the needle
+        // contains a byte pair not marked true, it can't be a substring yet.
+        let mut palette =  [false; 65536];
+
         let mut haystack: Vec<u8> = Vec::with_capacity(capacity);
 
         for (imgidx, rowidx) in self.row_indices.iter()
         {
             let row = &images[*imgidx].rows[*rowidx];
-            let needle = &row.data;
 
-            let substring = unsafe { row.avx_search.inlined_search_in(&haystack) };
-
-            if !substring
+            if !Candidate::is_row_substring(&row, &haystack, &palette)
             {
+                let needle = &row.data;
                 let overlap = Self::find_overlap(&haystack, needle);
+
+                let length_before = usize::max(10, haystack.len()) - 10;
                 haystack.extend_from_slice(&needle[overlap..]);
+
+                for pair in haystack[length_before..].windows(2) {
+                    let index = Self::palette_key(pair);
+                    palette[index as usize] = true;
+                }
             }
         }
 
         return haystack;
+    }
+
+    fn palette_key(pair: &[u8]) -> usize
+    {
+        return (pair[0] as usize) + ((pair[1] as usize) << 8);
+    }
+
+    fn is_row_substring(row: &ImageRow, haystack: &Vec<u8>, palette: &[bool; 65536]) -> bool
+    {
+        for pair in row.data.windows(2) {
+            if !palette[Self::palette_key(pair)] {
+                return false;
+            }
+        }
+
+        return row.finder.find_iter(haystack).next().is_some();
     }
 
     // Find how much of the end of the left overlaps with the start of the right
@@ -252,11 +292,18 @@ struct Problem {
 
 impl Problem
 {
-    fn new(images: Vec<ImageData>) -> Problem
+    fn new(input: &Vec<RawImageData>) -> Problem
     {
+        let images = input.iter()
+            .map(|i| ImageData::new(i))
+            .collect::<Vec<_>>();
+
         let max_size = images.iter().map(|i| i.pixel_count * 2).sum::<u64>() as usize;
         
-        let all_rows = images.iter().flat_map(|i| &i.rows).map(|m| m.data.clone()).collect::<Vec<_>>();
+        let all_rows = images.iter()
+            .flat_map(|i| &i.rows)
+            .map(|m| m.data.clone())
+            .collect::<Vec<_>>();
 
         let mut index = 0;
         let mut prototype = Vec::new();
@@ -303,8 +350,8 @@ impl Problem
         let mut indices = self.prototype.clone();
         thread_rng().shuffle(&mut indices);
 
-        return Candidate {
-            row_indices: indices
+        Candidate {
+            row_indices: indices,
         }
     }
 
@@ -326,7 +373,7 @@ impl Problem
         return candidate;
     }
 
-    fn rank_candidate_immut(&self, candidate: &Candidate) -> usize
+    fn rank_candidate(&self, candidate: &mut Candidate) -> usize
     {
         let data = candidate.flatten(self.max_size, &self.images);
         return data.len();
@@ -334,9 +381,9 @@ impl Problem
 }
 
 impl Solution {
-    pub fn solve(runtime: Duration, images: Vec<ImageData>) -> Solution {
+    pub fn solve(runtime: Duration, images: &Vec<RawImageData>) -> Solution {
         let mut problem = Problem::new(images);
-        let solution = custom_solve(&mut problem, 100, 999, runtime);
+        let solution = custom_solve(&mut problem, 64, 999, runtime);
         return Solution::new(problem, solution);
     }
 }
@@ -346,7 +393,7 @@ fn custom_solve(problem: &mut Problem, items: usize, max_items: usize, runtime: 
     // Generate the initial guess
     let initial_best = (0..items+1).into_par_iter()
         .map(|_| problem.generate_candidate())
-        .map(|c| (problem.rank_candidate_immut(&c), c))
+        .map(|mut c| (problem.rank_candidate(&mut c), c))
         .min_by_key(|x| x.0)
         .expect("Expected at least 1 item in round");
 
@@ -367,9 +414,9 @@ fn custom_solve(problem: &mut Problem, items: usize, max_items: usize, runtime: 
         total_samples += pool.len() as u64;
         let mut results = pool.into_par_iter()
             .map(|c| problem.tweak_candidate(c, temperature))
-            .map(|c| (problem.rank_candidate_immut(&c), c))
+            .map(|mut c| (problem.rank_candidate(&mut c), c))
             .collect::<Vec<_>>();
-            results.sort_by_key(|x| x.0);
+            results.sort_unstable_by_key(|x| x.0);
 
         let best_in_round = &results[0];
         if best_in_round.0 < best_score
@@ -390,12 +437,13 @@ fn custom_solve(problem: &mut Problem, items: usize, max_items: usize, runtime: 
             // This wasn't an improvement, fill pool with all the results from the
             // last round plus the same number of copies of the best so far.
             pool = results.into_iter()
+                .sorted_unstable_by_key(|k| -(k.0 as i64))
                 .flat_map(|item| { [ item.1, best_candidate.clone() ] })
                 .take(max_items)
                 .collect();
 
             // Lower the temperature slightly
-            temperature = f32::max(temperature * 0.75, 1f32)
+            temperature = f32::max(temperature * 0.85, 1f32)
         }
 
         let ratio = (best_score as f64 / problem.max_size as f64) * 100f64;
