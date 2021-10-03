@@ -39,10 +39,6 @@ struct Opt
     /// Output file, stdout if not present
     #[structopt(parse(from_os_str))]
     output: Option<PathBuf>,
-
-    // /// Files which should be treated as spritefonts instead of sprites
-    // #[structopt(long = "spritefonts")]
-    // spritefonts: Vec<String>,
 }
 
 fn main()
