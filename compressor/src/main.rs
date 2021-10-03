@@ -1,9 +1,8 @@
-use std::env::set_current_dir;
+use std::env::{self, set_current_dir};
 use std::fs;
-use std::path::Path;
 use time::Duration;
-
-use clap::{ Arg, App };
+use std::path::PathBuf;
+use structopt::StructOpt;
 
 mod solver;
 use solver::Solution;
@@ -17,58 +16,67 @@ use output::HeaderBuilder;
 mod check;
 use check::sanity_check;
 
-fn main() {
-    let matches = App::new("Pico Image Compressor")
-        .version("1.0")
-        .author("Martin Evans")
-        .about("Compresses a set of images in a way that can be decompressed on the Pico")
-        .arg(Arg::with_name("INPUT")
-            .help("Sets the input folder to use")
-            .required(true)
-            .index(1))
-        .arg(Arg::with_name("OUTPUT")
-            .help("Sets the output file to use")
-            .required(true)
-            .index(2))
-        .arg(Arg::with_name("FILTER")
-            .long("filter")
-            .help("Sets the file filter to use")
-            .required(false)
-            .default_value("**/*.png"))
-        .arg(Arg::with_name("DURATION")
-            .long("duration")
-            .help("Sets the duration to compress for (in ms)")
-            .required(false)
-            .default_value("30000"))
-        .get_matches();
+#[derive(Debug, StructOpt)]
+#[structopt(name = "pico-image-compressor", about = "Compress images suitable for scanlie decoding on a Pico.")]
+struct Opt
+{
+    /// Maximum time to spend compressing
+    #[structopt(short = "d", long = "duration", default_value = "300000")]
+    duration_ms: u32,
 
-    set_current_dir(Path::new(matches.value_of("INPUT").expect("INPUT had no value.")))
-        .expect("Failed to set cwd to input directory");
+    /// Maximum time to spend compressing
+    #[structopt(short = "e", long = "early_stopping", default_value = "9")]
+    early_stopping: u32,
 
-    // Setup file output
-    let mut header = HeaderBuilder::new();
+    /// Input folder
+    #[structopt(parse(from_os_str))]
+    input: PathBuf,
+
+    /// Input filter
+    #[structopt(short = "f", long = "filter", )]
+    filter: String,
+
+    /// Output file, stdout if not present
+    #[structopt(parse(from_os_str))]
+    output: Option<PathBuf>,
+
+    // /// Files which should be treated as spritefonts instead of sprites
+    // #[structopt(long = "spritefonts")]
+    // spritefonts: Vec<String>,
+}
+
+fn main()
+{
+    let opt = Opt::from_args();
 
     // Find files and load them into memory
-    let loader = Loader::create_from_filter(matches.value_of("FILTER").expect("FILTER had no value."));
+    let start_dir = env::current_dir().unwrap();
+    set_current_dir(&opt.input).expect("Failed to set cwd to input directory");
+    let loader = Loader::create_from_filter(&opt.filter);
     let files = loader.load_files();
     println!("## Loaded images files:");
     for file in files.iter() {
         println!(" - {}", file);
     }
+    set_current_dir(&start_dir).expect("Failed to set cwd to original directory");
 
-    let milliseconds: u32 = matches.value_of("DURATION").expect("DURATION had no value").parse::<u32>().unwrap_or(30000);
-    let duration = Duration::milliseconds(milliseconds as i64);
-    let solution = Solution::solve(duration, &files);
+    let duration = Duration::milliseconds(opt.duration_ms.into());
+    let solution = Solution::solve(duration, &files, opt.early_stopping);
 
     sanity_check(&files, &solution);
-    println!("Sanity ok");
+
+    // Setup file output
+    let mut header = HeaderBuilder::new();
 
     header.stats_comment(solution.stats());
     header.image_list_comment(&files);
     header.write_pixels(solution.pixels());
     header.write_metadata(solution.metadata());
 
-    let output = matches.value_of("OUTPUT").expect("OUTPUT had no value");
-    fs::write(output, header.to_string()).unwrap();
+    if let Some(output) = opt.output {
+        fs::write(output, header.to_string()).unwrap();
+    } else {
+        println!("{}", header.to_string());
+    }
 }
 

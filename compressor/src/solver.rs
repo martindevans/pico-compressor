@@ -381,14 +381,14 @@ impl Problem
 }
 
 impl Solution {
-    pub fn solve(runtime: Duration, images: &Vec<RawImageData>) -> Solution {
+    pub fn solve(runtime: Duration, images: &Vec<RawImageData>, early_stopping: u32) -> Solution {
         let mut problem = Problem::new(images);
-        let solution = custom_solve(&mut problem, 64, 999, runtime);
+        let solution = custom_solve(&mut problem, 64, 999, runtime, early_stopping);
         return Solution::new(problem, solution);
     }
 }
 
-fn custom_solve(problem: &mut Problem, items: usize, max_items: usize, runtime: Duration) -> Candidate
+fn custom_solve(problem: &mut Problem, items: usize, max_items: usize, max_runtime: Duration, early_stopping: u32) -> Candidate
 {
     // Generate the initial guess
     let initial_best = (0..items+1).into_par_iter()
@@ -405,10 +405,11 @@ fn custom_solve(problem: &mut Problem, items: usize, max_items: usize, runtime: 
         pool.push(best_candidate.clone());
     }
 
+    let mut no_improvements = 0u32;
     let mut temperature = 293f32;
     let mut total_samples: u64 = 0;
     let start_time = PreciseTime::now();
-    while start_time.to(PreciseTime::now()) < runtime
+    while start_time.to(PreciseTime::now()) < max_runtime && no_improvements < early_stopping
     {
         // Tweak every item in pool
         total_samples += pool.len() as u64;
@@ -431,6 +432,8 @@ fn custom_solve(problem: &mut Problem, items: usize, max_items: usize, runtime: 
                 .take(items - 1)
                 .chain([ problem.generate_candidate() ])
                 .collect();
+
+            no_improvements = 0;
         }
         else
         {
@@ -443,7 +446,9 @@ fn custom_solve(problem: &mut Problem, items: usize, max_items: usize, runtime: 
                 .collect();
 
             // Lower the temperature slightly
-            temperature = f32::max(temperature * 0.85, 1f32)
+            temperature = f32::max(temperature * 0.85, 1f32);
+
+            no_improvements += 1;
         }
 
         let ratio = (best_score as f64 / problem.max_size as f64) * 100f64;
